@@ -22,7 +22,7 @@ def run_strategy():
         return
 
     # 打印当前可用资金 (假设你需要看 USD 余额)
-    usd_free = balance.get("Wallet", {}).get("USD", {}).get("Free", "未知")
+    usd_free = balance.get("SpotWallet", {}).get("USD", {}).get("Free", "未知")
     print(f"✅ 连接成功！当前账户可用资金: ${usd_free}")
     print("-" * 30)
 
