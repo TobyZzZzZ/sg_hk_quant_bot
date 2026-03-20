@@ -1,14 +1,14 @@
 # main.py
+import argparse
 import time
-from roostoo_api import check_server_time, get_balance, get_ticker, place_order
+from src.api.roostoo import check_server_time, get_balance, get_ticker, place_order
 
-SYMBOL = "BTC/USD"
-TRADE_QTY = 0.01  # 每次交易数量
-
-# --- 策略参数 ---
-FAST_WINDOW = 10   # 快线周期：过去 10 个价格的平均值
-SLOW_WINDOW = 50   # 慢线周期：过去 50 个价格的平均值
-CHECK_INTERVAL = 30 # 每 30 秒检查一次
+# --- 默认参数 ---
+DEFAULT_SYMBOL = "BTC/USD"
+DEFAULT_TRADE_QTY = 0.01
+DEFAULT_FAST_WINDOW = 10
+DEFAULT_SLOW_WINDOW = 50
+DEFAULT_CHECK_INTERVAL = 30
 
 # --- 状态维护 ---
 price_history = []      # 存储历史价格
@@ -20,10 +20,29 @@ def calculate_ma(data, window):
         return None
     return sum(data[-window:]) / window
 
-def run_strategy():
+def parse_args(args_list=None):
+    parser = argparse.ArgumentParser(description="Toy Strategy", add_help=False)
+    parser.add_argument("--symbol", type=str, default=DEFAULT_SYMBOL)
+    parser.add_argument("--qty", type=float, default=DEFAULT_TRADE_QTY)
+    parser.add_argument("--fast_window", type=int, default=DEFAULT_FAST_WINDOW)
+    parser.add_argument("--slow_window", type=int, default=DEFAULT_SLOW_WINDOW)
+    parser.add_argument("--interval", type=int, default=DEFAULT_CHECK_INTERVAL)
+    
+    args, _ = parser.parse_known_args(args_list)
+    return args
+
+def run_strategy(args_list=None):
     global price_history, current_position
     
+    args = parse_args(args_list)
+    SYMBOL = args.symbol
+    TRADE_QTY = args.qty
+    FAST_WINDOW = args.fast_window
+    SLOW_WINDOW = args.slow_window
+    CHECK_INTERVAL = args.interval
+
     print("🤖 双均线策略机器人启动中...")
+    print(f"--> 交易对: {SYMBOL}, 数量: {TRADE_QTY}")
     print(f"--> 快线周期: {FAST_WINDOW}, 慢线周期: {SLOW_WINDOW}")
 
     # 1. 初始化检查

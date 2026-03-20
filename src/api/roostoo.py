@@ -3,7 +3,13 @@ import requests
 import time
 import hmac
 import hashlib
-import config  # 引入你的配置文件
+try:
+    import config
+except ImportError:
+    import sys
+    import os
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+    import config
 
 BASE_URL = "https://mock-api.roostoo.com"
 
