@@ -2,6 +2,7 @@ config.py
 data/
 reports/
 trading.db
+monitor.py
 
 # Python-generated files
 __pycache__/

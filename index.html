@@ -276,13 +276,28 @@
                     chart.setOption({ xAxis: { data: times }, series: [{ data: prices }, { data: equities }] });
                 };
 
+                // 创建一个精准对齐后台 10 秒节奏的智能轮询
+                const startSmartPolling = () => {
+                    const now = Date.now();
+                    // 计算距离下一个 10 秒整点还有多少毫秒
+                    // 额外加 500 毫秒 (0.5秒) 延迟，确保后台已经完成了数据库写入
+                    const delay = 10000 - (now % 10000) + 500;
+                    
+                    timer = setTimeout(() => {
+                        fetchAllData();
+                        startSmartPolling(); // 递归调用，安排下一次
+                    }, delay);
+                };
+
                 onMounted(() => {
                     initChart();
-                    fetchAllData(); // 一打开就拉取全部数据
-                    timer = setInterval(fetchAllData, 3000); // 3秒刷新一次，更有交易所的感觉
+                    fetchAllData(); // 一打开就立刻拉取一次
+                    startSmartPolling(); // 启动智能轮询
                 });
 
-                onUnmounted(() => { if(timer) clearInterval(timer); });
+                onUnmounted(() => { 
+                    if(timer) clearTimeout(timer); 
+                });
 
                 return { isRunning, config, wallets, orders, currentPrice, estimatedTotalValue, startStrategy, stopStrategy, cancelAllOrders, closeAllPositions }
             }

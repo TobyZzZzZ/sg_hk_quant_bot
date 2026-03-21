@@ -52,10 +52,10 @@ class StrategyState:
     def __init__(self):
         self.running = False
         self.symbol = "BTC/USD"
-        self.lower_price = 60000.0
-        self.upper_price = 80000.0
+        self.lower_price = 65000.0
+        self.upper_price = 75000.0
         self.grid_count = 40
-        self.total_investment = 50000.0
+        self.total_investment = 1000000.0
         self.qty_per_grid = 0.0
 
         # 【新增】缓存最新资产，防止 API 频率限制或偶发网络错误导致权益瞬间归零
@@ -165,7 +165,7 @@ def setup_initial_position():
             state.symbol, side="SELL", quantity=round(abs(diff), 4), order_type="MARKET"
         )
 
-    time.sleep(2)
+    time.sleep(1)
 
 
 async def strategy_loop():
@@ -173,7 +173,9 @@ async def strategy_loop():
         try:
             current_price = get_current_price()
             if current_price == 0.0:
-                await asyncio.sleep(5)
+                # 遇到错误时，也等待到下一个 10 秒整点
+                sleep_time = 10.0 - (time.time() % 10.0)
+                await asyncio.sleep(sleep_time)
                 continue
 
             # 更新资金（如果失败会自动使用上次成功的缓存值）
@@ -200,7 +202,8 @@ async def strategy_loop():
 
             # 如果策略未运行，只记录数据，不执行挂单逻辑
             if not state.running:
-                await asyncio.sleep(5)
+                sleep_time = 10.0 - (time.time() % 10.0)
+                await asyncio.sleep(sleep_time)
                 continue
 
             pending_res = query_order(pair=state.symbol, pending_only=True)
@@ -249,7 +252,9 @@ async def strategy_loop():
             print(f"策略循环异常: {e}")
             traceback.print_exc()
 
-        await asyncio.sleep(5)
+        # 【核心修改】动态计算睡眠时间，精准对齐到下一个 10 秒整点
+        sleep_time = 10.0 - (time.time() % 10.0)
+        await asyncio.sleep(sleep_time)
 
 
 @app.on_event("startup")
