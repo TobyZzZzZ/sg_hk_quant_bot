@@ -3,6 +3,8 @@ data/
 reports/
 trading.db
 monitor.py
+dashboard.py
+dashboard.html
 
 # Python-generated files
 __pycache__/
