@@ -1,418 +1,160 @@
-# main.py
-import asyncio
-import sqlite3
 import time
-import os
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import uvicorn
-
 from src.api.roostoo import (
     get_ticker,
     get_balance,
     place_order,
-    cancel_order,
     query_order,
+    cancel_order,
 )
 
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-DB_FILE = "trading.db"
+SYMBOL = "BTC/USD"
+LOWER_BOUND = 63000.0
+UPPER_BOUND = 77000.0
+NUM_GRIDS = 40
+SPACING = (UPPER_BOUND - LOWER_BOUND) / NUM_GRIDS
+Q_PER_GRID = 0.3537  # 固定的每格基准货币(BTC)交易数量
+MAKER_FEE = 0.0005  # 0.05% maker fee
 
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS history (
-            timestamp INTEGER PRIMARY KEY,
-            price REAL,
-            total_equity REAL,
-            usd_balance REAL,
-            btc_balance REAL
-        )
-    """)
-    conn.commit()
-    conn.close()
+def init_grid():
+    # 1. 撤销当前所有的挂单
+    print(f"Canceling all existing pending orders for {SYMBOL}...")
+    cancel_order(pair=SYMBOL)
+
+    # 2. 获取当前价格以决定初始网格缺口(Gap)位置
+    ticker = get_ticker(SYMBOL)
+    if not ticker or not ticker.get("Success"):
+        raise Exception("Failed to get ticker. Please check your network or API keys.")
+
+    last_price = float(ticker["Data"][SYMBOL]["LastPrice"])
+    print(f"Current price: {last_price}")
+
+    # 计算初始空缺网格的索引 k
+    # k 对应着正好在当前价格下方的那条网格线，这里不会挂任何单，从而保证最高买价和最低卖价之间相差 2 个间距
+    k = int((last_price - LOWER_BOUND) / SPACING)
+    k = max(0, min(NUM_GRIDS, k))
+
+    print(f"Initial gap index: {k} (Gap Price Level: {LOWER_BOUND + k * SPACING})")
+
+    # 3. 检查是否有充足的 BTC 以挂出所有的卖单
+    num_sell_orders = NUM_GRIDS - k
+    # 卖出时手续费以 BTC 扣除，所以我们需要准备本金 + 手续费的 BTC 数量
+    required_btc = round(num_sell_orders * Q_PER_GRID * (1 + MAKER_FEE), 4) + 0.0001
+
+    balance = get_balance()
+    if not balance or not balance.get("Success"):
+        raise Exception("Failed to get balance.")
+
+    # 使用更新后的现货钱包字段 'SpotWallet'
+    free_btc = float(balance["SpotWallet"]["BTC"]["Free"])
+    print(f"Current free BTC: {free_btc:.6f}, Required BTC: {required_btc:.4f}")
+
+    if free_btc < required_btc:
+        btc_to_buy = required_btc - free_btc
+        print(f"Insufficient BTC. Buying {btc_to_buy:.6f} BTC at market price...")
+        # 以市价买入所需的差额 BTC。买入的手续费以 USD 扣除，所以市价买入 btc_to_buy 数量能得到确切数量的 BTC
+        resp = place_order(SYMBOL, "BUY", btc_to_buy, order_type="MARKET")
+        if not resp or not resp.get("Success"):
+            raise Exception(f"Failed to buy initial BTC: {resp}")
+        print("Market buy successful.")
+
+    # 4. 初始化挂单
+    active_orders = {}
+    print("Placing initial SELL limit orders...")
+    for i in range(k + 1, NUM_GRIDS + 1):
+        price = LOWER_BOUND + i * SPACING
+        resp = place_order(SYMBOL, "SELL", Q_PER_GRID, price=price, order_type="LIMIT")
+        if resp and resp.get("Success"):
+            active_orders[i] = resp["OrderDetail"]["OrderID"]
+            print(f"Placed SELL order at {price}")
+        else:
+            print(f"Failed to place SELL order at {price}: {resp}")
+
+    print("Placing initial BUY limit orders...")
+    for i in range(0, k):
+        price = LOWER_BOUND + i * SPACING
+        resp = place_order(SYMBOL, "BUY", Q_PER_GRID, price=price, order_type="LIMIT")
+        if resp and resp.get("Success"):
+            active_orders[i] = resp["OrderDetail"]["OrderID"]
+            print(f"Placed BUY order at {price}")
+        else:
+            print(f"Failed to place BUY order at {price}: {resp}")
+
+    return k, active_orders
 
 
-init_db()
+def main():
+    print("=== Starting BTC/USD Grid Bot ===")
+    current_gap, active_orders = init_grid()
+    print(f"Grid initialization complete. Starting monitor loop...")
 
-
-class StrategyState:
-    def __init__(self):
-        self.running = False
-        self.symbol = "BTC/USD"
-        self.lower_price = 65000.0
-        self.upper_price = 75000.0
-        self.grid_count = 40
-        self.total_investment = 1000000.0
-        self.qty_per_grid = 0.0
-
-        # 【新增】缓存最新资产，防止 API 频率限制或偶发网络错误导致权益瞬间归零
-        self.last_usd_free = 0.0
-        self.last_usd_lock = 0.0
-        self.last_btc_free = 0.0
-        self.last_btc_lock = 0.0
-
-    @property
-    def last_usd_total(self):
-        return self.last_usd_free + self.last_usd_lock
-
-    @property
-    def last_btc_total(self):
-        return self.last_btc_free + self.last_btc_lock
-
-
-state = StrategyState()
-
-
-def update_balance_from_api():
-    """带缓存机制和全兼容解析的余额更新"""
-    bal_data = get_balance()
-
-    if not bal_data or not isinstance(bal_data, dict):
-        # API 报错时不更新资产（保留上次的缓存），但会在终端打印
-        print(f"[警告] 余额API未返回有效字典: {bal_data}")
-        return
-
-    # 兼容各种大小写变体
-    success = bal_data.get("Success", bal_data.get("success", False))
-    if not success:
-        print(
-            f"[警告] 交易所拒绝了余额请求 (可能被限流): {bal_data.get('ErrMsg', bal_data)}"
-        )
-        return
-
-    wallet_data = bal_data.get(
-        "SpotWallet",
-        bal_data.get("Wallet", bal_data.get("wallet", bal_data.get("data", {}))),
-    )
-
-    if isinstance(wallet_data, dict):
-        usd_info = wallet_data.get("USD", wallet_data.get("usd", {}))
-        btc_info = wallet_data.get("BTC", wallet_data.get("btc", {}))
-
-        if usd_info:
-            state.last_usd_free = float(usd_info.get("Free", usd_info.get("free", 0)))
-            state.last_usd_lock = float(
-                usd_info.get("Lock", usd_info.get("lock", usd_info.get("locked", 0)))
-            )
-        if btc_info:
-            state.last_btc_free = float(btc_info.get("Free", btc_info.get("free", 0)))
-            state.last_btc_lock = float(
-                btc_info.get("Lock", btc_info.get("lock", btc_info.get("locked", 0)))
-            )
-
-
-def get_current_price():
-    ticker = get_ticker(state.symbol)
-    if ticker and isinstance(ticker, dict):
-        data_dict = ticker.get("Data", ticker.get("data", {}))
-        pair_data = data_dict.get(state.symbol, data_dict)
-        last_price = pair_data.get(
-            "LastPrice", pair_data.get("lastPrice", pair_data.get("price", 0))
-        )
-        if last_price:
-            return float(last_price)
-    return 0.0
-
-
-def setup_initial_position():
-    print(">>> 正在初始化网格策略...")
-    cancel_order(pair=state.symbol)
-    time.sleep(1)
-
-    current_price = get_current_price()
-    if current_price == 0.0:
-        raise Exception("无法获取当前价格，初始化失败")
-
-    state.qty_per_grid = round(
-        state.total_investment / (current_price * state.grid_count), 4
-    )
-    if state.qty_per_grid <= 0:
-        state.qty_per_grid = 0.0001
-
-    step = (state.upper_price - state.lower_price) / state.grid_count
-    sell_grids_count = sum(
-        1
-        for i in range(state.grid_count + 1)
-        if (state.lower_price + i * step) > current_price
-    )
-    target_btc = sell_grids_count * state.qty_per_grid
-
-    update_balance_from_api()
-    btc = state.last_btc_total
-    diff = target_btc - btc
-
-    if diff > 0.001:
-        print(f"初始建仓: 市价买入 {round(diff, 4)} BTC")
-        place_order(
-            state.symbol, side="BUY", quantity=round(diff, 4), order_type="MARKET"
-        )
-    elif diff < -0.001:
-        print(f"初始建仓: 市价卖出 {round(abs(diff), 4)} BTC")
-        place_order(
-            state.symbol, side="SELL", quantity=round(abs(diff), 4), order_type="MARKET"
-        )
-
-    time.sleep(1)
-
-
-async def strategy_loop():
     while True:
-        try:
-            current_price = get_current_price()
-            if current_price == 0.0:
-                # 遇到错误时，也等待到下一个 10 秒整点
-                sleep_time = 10.0 - (time.time() % 10.0)
-                await asyncio.sleep(sleep_time)
+        time.sleep(1)
+
+        # 抓取目前所有处于 pending 状态的订单
+        pending_resp = query_order(pair=SYMBOL, pending_only=True)
+
+        if not pending_resp or not pending_resp.get("Success"):
+            if pending_resp and pending_resp.get("ErrMsg") == "no order matched":
+                pending_ids = set()
+            else:
+                # 遇到临时的网络错误或 Rate Limit 则跳过本次循环
                 continue
+        else:
+            pending_orders = pending_resp.get("OrderMatched", [])
+            pending_ids = set(order["OrderID"] for order in pending_orders)
 
-            # 更新资金（如果失败会自动使用上次成功的缓存值）
-            update_balance_from_api()
+        # 找出当前活动订单中已经不在 pending 列表里的订单，这意味着它们已成交（FILLED）
+        filled_indices = []
+        for idx, order_id in active_orders.items():
+            if order_id not in pending_ids:
+                filled_indices.append(idx)
 
-            total_equity = state.last_usd_total + (state.last_btc_total * current_price)
+        if not filled_indices:
+            continue
 
-            # 【关键修复】只有算出真实权益才写入数据库，严防 0 污染
-            if total_equity > 0:
-                conn = sqlite3.connect(DB_FILE)
-                c = conn.cursor()
-                c.execute(
-                    "INSERT INTO history (timestamp, price, total_equity, usd_balance, btc_balance) VALUES (?, ?, ?, ?, ?)",
-                    (
-                        int(time.time() * 1000),
-                        current_price,
-                        total_equity,
-                        state.last_usd_total,
-                        state.last_btc_total,
-                    ),
+        # 将已成交订单按方向拆分并排序，以便妥善处理剧烈波动（一次成交多单）的情况
+        # 价格上涨时，卖单被吃掉，从下往上依次填补
+        sells_filled = sorted([i for i in filled_indices if i > current_gap])
+        # 价格下跌时，买单被吃掉，从上往下依次填补
+        buys_filled = sorted(
+            [i for i in filled_indices if i < current_gap], reverse=True
+        )
+
+        # 处理被触发的卖单（币价上涨）
+        for idx in sells_filled:
+            print(
+                f"[FILLED] SELL order at index {idx} (Price: {LOWER_BOUND + idx * SPACING}) filled."
+            )
+            del active_orders[idx]
+            current_gap += 1
+            new_buy_idx = current_gap - 1
+            if new_buy_idx >= 0:
+                price = LOWER_BOUND + new_buy_idx * SPACING
+                resp = place_order(
+                    SYMBOL, "BUY", Q_PER_GRID, price=price, order_type="LIMIT"
                 )
-                conn.commit()
-                conn.close()
+                if resp and resp.get("Success"):
+                    active_orders[new_buy_idx] = resp["OrderDetail"]["OrderID"]
+                    print(f"[PLACED] New BUY order at {price}")
 
-            # 如果策略未运行，只记录数据，不执行挂单逻辑
-            if not state.running:
-                sleep_time = 10.0 - (time.time() % 10.0)
-                await asyncio.sleep(sleep_time)
-                continue
-
-            pending_res = query_order(pair=state.symbol, pending_only=True)
-            pending_orders = []
-            if pending_res and isinstance(pending_res, dict):
-                pending_orders = pending_res.get(
-                    "OrderMatched", pending_res.get("data", [])
+        # 处理被触发的买单（币价下跌）
+        for idx in buys_filled:
+            print(
+                f"[FILLED] BUY order at index {idx} (Price: {LOWER_BOUND + idx * SPACING}) filled."
+            )
+            del active_orders[idx]
+            current_gap -= 1
+            new_sell_idx = current_gap + 1
+            if new_sell_idx <= NUM_GRIDS:
+                price = LOWER_BOUND + new_sell_idx * SPACING
+                resp = place_order(
+                    SYMBOL, "SELL", Q_PER_GRID, price=price, order_type="LIMIT"
                 )
-
-            pending_prices = [
-                float(o.get("Price", o.get("price", 0)))
-                for o in pending_orders
-                if str(o.get("Type", o.get("type", ""))).upper() == "LIMIT"
-            ]
-
-            step = (state.upper_price - state.lower_price) / state.grid_count
-            buffer = step * 0.1
-
-            for i in range(state.grid_count + 1):
-                grid_price = round(state.lower_price + i * step, 2)
-                has_order = any(abs(p - grid_price) < 1.0 for p in pending_prices)
-
-                if not has_order:
-                    if grid_price < current_price - buffer:
-                        place_order(
-                            state.symbol,
-                            side="BUY",
-                            quantity=state.qty_per_grid,
-                            price=grid_price,
-                            order_type="LIMIT",
-                        )
-                        await asyncio.sleep(0.1)
-                    elif grid_price > current_price + buffer:
-                        place_order(
-                            state.symbol,
-                            side="SELL",
-                            quantity=state.qty_per_grid,
-                            price=grid_price,
-                            order_type="LIMIT",
-                        )
-                        await asyncio.sleep(0.1)
-
-        except Exception as e:
-            import traceback
-
-            print(f"策略循环异常: {e}")
-            traceback.print_exc()
-
-        # 【核心修改】动态计算睡眠时间，精准对齐到下一个 10 秒整点
-        sleep_time = 10.0 - (time.time() % 10.0)
-        await asyncio.sleep(sleep_time)
-
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(strategy_loop())
-
-
-class StartConfig(BaseModel):
-    lower_price: float
-    upper_price: float
-    grid_count: int
-    total_investment: float
-
-
-@app.post("/api/start")
-def api_start(config: StartConfig):
-    if state.running:
-        return {"status": "error", "msg": "Strategy running"}
-    state.lower_price, state.upper_price, state.grid_count, state.total_investment = (
-        config.lower_price,
-        config.upper_price,
-        config.grid_count,
-        config.total_investment,
-    )
-    try:
-        setup_initial_position()
-        state.running = True
-        return {"status": "success", "msg": "Started"}
-    except Exception as e:
-        return {"status": "error", "msg": str(e)}
-
-
-@app.post("/api/stop")
-def api_stop():
-    state.running = False
-    cancel_order(pair=state.symbol)
-    return {"status": "success", "msg": "Stopped"}
-
-
-@app.get("/api/status")
-def api_status():
-    return {
-        "running": state.running,
-        "config": {
-            "lower_price": state.lower_price,
-            "upper_price": state.upper_price,
-            "grid_count": state.grid_count,
-            "investment": state.total_investment,
-        },
-    }
-
-
-@app.get("/api/chart_data")
-def api_chart_data():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(
-        "SELECT timestamp, price, total_equity FROM history ORDER BY timestamp DESC LIMIT 500"
-    )
-    rows = c.fetchall()
-    conn.close()
-    rows.reverse()
-    return {
-        "times": [r[0] for r in rows],
-        "prices": [r[1] for r in rows],
-        "equities": [r[2] for r in rows],
-    }
-
-
-@app.get("/api/account")
-def api_account():
-    update_balance_from_api()
-    wallets = []
-    # 从缓存中读取，确保 UI 始终有数据展示
-    if state.last_usd_total > 0 or state.last_usd_free > 0:
-        wallets.append(
-            {
-                "coin": "USD",
-                "free": state.last_usd_free,
-                "lock": state.last_usd_lock,
-                "total": state.last_usd_total,
-            }
-        )
-    if state.last_btc_total > 0 or state.last_btc_free > 0:
-        wallets.append(
-            {
-                "coin": "BTC",
-                "free": state.last_btc_free,
-                "lock": state.last_btc_lock,
-                "total": state.last_btc_total,
-            }
-        )
-
-    return {"wallets": wallets, "current_price": get_current_price()}
-
-
-@app.get("/api/orders")
-def api_orders():
-    res = query_order(pair=state.symbol, pending_only=True)
-    orders = []
-    if res and isinstance(res, dict) and res.get("Success", res.get("success")):
-        orders = res.get("OrderMatched", res.get("data", []))
-        orders = sorted(
-            orders, key=lambda x: float(x.get("Price", x.get("price", 0))), reverse=True
-        )
-    return {"orders": orders}
-
-
-@app.post("/api/cancel_all")
-def api_cancel_all():
-    cancel_order()
-    return {"status": "success", "msg": "已撤销所有挂单"}
-
-
-@app.post("/api/close_all")
-def api_close_all():
-    # 1. 撤销所有挂单
-    cancel_order()
-    time.sleep(1)
-
-    # 2. 获取最新余额，市价卖出所有非 USD 币种
-    bal_data = get_balance()
-    sold_coins = []
-    if (
-        bal_data
-        and isinstance(bal_data, dict)
-        and bal_data.get("Success", bal_data.get("success"))
-    ):
-        wallet_data = bal_data.get(
-            "SpotWallet",
-            bal_data.get("Wallet", bal_data.get("wallet", bal_data.get("data", {}))),
-        )
-        if isinstance(wallet_data, dict):
-            for coin, info in wallet_data.items():
-                if coin.upper() == "USD":
-                    continue
-                free = float(info.get("Free", info.get("free", 0)))
-                lock = float(info.get("Lock", info.get("lock", 0)))
-                total = free + lock
-                if total > 0.0001:
-                    # 市价卖出
-                    place_order(
-                        f"{coin}/USD",
-                        side="SELL",
-                        quantity=round(total, 4),
-                        order_type="MARKET",
-                    )
-                    sold_coins.append(coin)
-
-        msg = (
-            f"已一键平仓 (出售了 {', '.join(sold_coins)})"
-            if sold_coins
-            else "当前没有可平仓的资产"
-        )
-        return {"status": "success", "msg": msg}
-
-    return {"status": "error", "msg": "无法获取余额信息，平仓失败"}
+                if resp and resp.get("Success"):
+                    active_orders[new_sell_idx] = resp["OrderDetail"]["OrderID"]
+                    print(f"[PLACED] New SELL order at {price}")
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    main()
