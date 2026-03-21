@@ -1,5 +1,7 @@
 config.py
 data/
+reports/
+trading.db
 
 # Python-generated files
 __pycache__/

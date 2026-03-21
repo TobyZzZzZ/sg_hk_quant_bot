@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Roostoo Pro Terminal</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 增加一些平滑滚动和滚动条样式适配暗黑主题 */
+        body { background-color: #0b0e11; color: #EAECEF; }
+        .panel { background-color: #181a20; border: 1px solid #2b3139; border-radius: 8px; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0b0e11; }
+        ::-webkit-scrollbar-thumb { background: #2b3139; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #474d57; }
+        input { background-color: #2b3139; color: #EAECEF; border: 1px solid #474d57; outline: none; }
+        input:focus { border-color: #fcd535; }
+        input:disabled { opacity: 0.5; cursor: not-allowed; }
+        .text-green { color: #0ecb81; }
+        .text-red { color: #f6465d; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col font-sans">
+    <div id="app" class="flex-1 flex flex-col h-screen overflow-hidden">
+        
+        <header class="h-14 bg-[#181a20] border-b border-[#2b3139] flex items-center justify-between px-6 shrink-0">
+            <div class="flex items-center space-x-6">
+                <div class="text-[#fcd535] font-black text-xl tracking-wider">ROOSTOO PRO</div>
+                <div class="text-sm font-semibold flex items-baseline space-x-2">
+                    <span class="text-lg">{{ currentPrice ? currentPrice.toFixed(2) : '--' }}</span>
+                    <span class="text-gray-400">BTC/USD</span>
+                </div>
+            </div>
+            <div class="flex items-center space-x-4 text-sm">
+                <div class="text-gray-400">预估总资产:</div>
+                <div class="font-bold text-lg">≈ ${{ estimatedTotalValue.toFixed(2) }}</div>
+                <span class="px-2 py-1 rounded text-xs font-bold" :class="isRunning ? 'bg-green-900 text-green' : 'bg-red-900 text-red'">
+                    {{ isRunning ? '• 策略运行中' : '• 策略已停止' }}
+                </span>
+            </div>
+        </header>
+
+        <div class="flex-1 flex flex-row overflow-hidden p-2 space-x-2">
+            
+            <div class="flex-1 flex flex-col space-y-2 overflow-hidden">
+                <div class="panel flex-1 p-2 relative">
+                    <div id="mainChart" class="w-full h-full"></div>
+                </div>
+
+                <div class="panel h-48 flex flex-col p-4 shrink-0 overflow-hidden">
+                    <h3 class="text-sm font-bold text-gray-400 mb-2 uppercase tracking-wide">资金账户 (Spot Wallet)</h3>
+                    <div class="overflow-y-auto pr-2">
+                        <table class="w-full text-sm text-left">
+                            <thead class="text-xs text-gray-500 sticky top-0 bg-[#181a20]">
+                                <tr>
+                                    <th class="py-2">币种</th>
+                                    <th class="py-2 text-right">可用 (Free)</th>
+                                    <th class="py-2 text-right">冻结 (Locked)</th>
+                                    <th class="py-2 text-right">总计 (Total)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="w in wallets" :key="w.coin" class="border-t border-[#2b3139] hover:bg-[#2b3139] transition-colors">
+                                    <td class="py-2 font-bold">{{ w.coin }}</td>
+                                    <td class="py-2 text-right">{{ w.free.toFixed(4) }}</td>
+                                    <td class="py-2 text-right text-gray-400">{{ w.lock.toFixed(4) }}</td>
+                                    <td class="py-2 text-right font-semibold">{{ w.total.toFixed(4) }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="w-96 flex flex-col space-y-2 shrink-0">
+                
+                <div class="panel p-5 shrink-0">
+                    <h3 class="text-sm font-bold text-gray-400 mb-4 uppercase tracking-wide">等差网格交易 (Grid Bot)</h3>
+                    
+                    <div class="space-y-4 text-sm">
+                        <div class="flex justify-between items-center">
+                            <label class="text-gray-400">区间下限 (USD)</label>
+                            <input type="number" v-model.number="config.lower_price" :disabled="isRunning" class="w-32 p-1.5 rounded text-right">
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <label class="text-gray-400">区间上限 (USD)</label>
+                            <input type="number" v-model.number="config.upper_price" :disabled="isRunning" class="w-32 p-1.5 rounded text-right">
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <label class="text-gray-400">网格数量</label>
+                            <input type="number" v-model.number="config.grid_count" :disabled="isRunning" class="w-32 p-1.5 rounded text-right">
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <label class="text-gray-400">投入资金 (USD)</label>
+                            <input type="number" v-model.number="config.total_investment" :disabled="isRunning" class="w-32 p-1.5 rounded text-right">
+                        </div>
+                    </div>
+
+                    <div class="mt-6">
+                        <button v-if="!isRunning" @click="startStrategy" class="w-full bg-[#fcd535] hover:bg-[#f0c828] text-black font-bold py-3 rounded shadow transition-colors">
+                            一键启动网格
+                        </button>
+                        <button v-if="isRunning" @click="stopStrategy" class="w-full bg-[#f6465d] hover:bg-[#e03f55] text-white font-bold py-3 rounded shadow transition-colors">
+                            终止策略并撤单
+                        </button>
+                    </div>
+
+                    <div class="mt-4 flex space-x-2">
+                        <button @click="cancelAllOrders" class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 rounded shadow transition-colors text-xs">
+                            一键撤所有挂单
+                        </button>
+                        <button @click="closeAllPositions" class="flex-1 bg-red-700 hover:bg-red-600 text-white font-bold py-2 rounded shadow transition-colors text-xs">
+                            一键平仓 (换回USD)
+                        </button>
+                    </div>
+                </div>
+
+                <div class="panel flex-1 flex flex-col p-4 overflow-hidden">
+                    <div class="flex justify-between items-center mb-2">
+                        <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wide">当前挂单 (Open Orders)</h3>
+                        <span class="text-xs bg-[#2b3139] px-2 py-1 rounded">{{ orders.length }} 个</span>
+                    </div>
+                    
+                    <div class="flex-1 overflow-y-auto pr-2">
+                        <table class="w-full text-xs text-right">
+                            <thead class="text-gray-500 sticky top-0 bg-[#181a20]">
+                                <tr>
+                                    <th class="py-2 text-left">方向/对</th>
+                                    <th class="py-2">价格</th>
+                                    <th class="py-2">数量</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-if="orders.length === 0">
+                                    <td colspan="3" class="text-center py-6 text-gray-500">暂无挂单</td>
+                                </tr>
+                                <tr v-for="o in orders" :key="o.OrderID" class="hover:bg-[#2b3139] transition-colors cursor-default">
+                                    <td class="py-1.5 text-left font-bold" :class="o.Side === 'BUY' ? 'text-green' : 'text-red'">
+                                        {{ o.Side === 'BUY' ? '买入' : '卖出' }} <span class="text-gray-500 text-[10px]">{{ o.Pair }}</span>
+                                    </td>
+                                    <td class="py-1.5">{{ parseFloat(o.Price).toFixed(2) }}</td>
+                                    <td class="py-1.5">{{ parseFloat(o.Quantity).toFixed(4) }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted, onUnmounted, computed } = Vue;
+
+        createApp({
+            setup() {
+                const isRunning = ref(false);
+                const config = ref({ lower_price: 60000, upper_price: 80000, grid_count: 40, total_investment: 50000 });
+                const wallets = ref([]);
+                const orders = ref([]);
+                const currentPrice = ref(0);
+                
+                let chart = null;
+                let timer = null;
+                const API_BASE = "http://127.0.0.1:8000/api";
+
+                // 计算预估总资产 (USD)
+                const estimatedTotalValue = computed(() => {
+                    let total = 0;
+                    wallets.value.forEach(w => {
+                        if(w.coin === 'USD') total += w.total;
+                        if(w.coin === 'BTC' && currentPrice.value) total += w.total * currentPrice.value;
+                        // 如果有其他币种也可以在此扩展
+                    });
+                    return total;
+                });
+
+                const fetchAllData = async () => {
+                    try {
+                        // 1. 获取策略状态
+                        const statusRes = await fetch(`${API_BASE}/status`);
+                        const statusData = await statusRes.json();
+                        isRunning.value = statusData.running;
+                        if(statusData.running) {
+                            config.value = statusData.config;
+                        }
+
+                        // 2. 获取账户余额和最新价
+                        const accRes = await fetch(`${API_BASE}/account`);
+                        const accData = await accRes.json();
+                        wallets.value = accData.wallets;
+                        if(accData.current_price > 0) currentPrice.value = accData.current_price;
+
+                        // 3. 获取所有挂单
+                        const orderRes = await fetch(`${API_BASE}/orders`);
+                        const orderData = await orderRes.json();
+                        orders.value = orderData.orders;
+
+                        // 4. 获取图表数据并更新
+                        const chartRes = await fetch(`${API_BASE}/chart_data`);
+                        const chartData = await chartRes.json();
+                        const times = chartData.times.map(t => {
+                            let d = new Date(t);
+                            return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}:${d.getSeconds().toString().padStart(2,'0')}`;
+                        });
+                        updateChart(times, chartData.prices, chartData.equities);
+
+                    } catch(e) { console.warn("后台拉取数据失败", e); }
+                };
+
+                const startStrategy = async () => {
+                    if(!confirm("⚠️ 确认启动网格？程序将自动根据当前价格进行市价调仓，并铺设挂单。")) return;
+                    try {
+                        await fetch(`${API_BASE}/start`, {
+                            method: "POST", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(config.value)
+                        });
+                        fetchAllData();
+                    } catch(e) { alert("启动失败"); }
+                };
+
+                const stopStrategy = async () => {
+                    if(!confirm("⚠️ 确认终止网格策略并撤销所有挂单？")) return;
+                    try {
+                        await fetch(`${API_BASE}/stop`, { method: "POST" });
+                        fetchAllData();
+                    } catch(e) { alert("停止失败"); }
+                };
+
+                const cancelAllOrders = async () => {
+                    if(!confirm("⚠️ 确认撤销所有挂单？")) return;
+                    try {
+                        const res = await fetch(`${API_BASE}/cancel_all`, { method: "POST" });
+                        const data = await res.json();
+                        alert(data.msg || "操作完成");
+                        fetchAllData();
+                    } catch(e) { alert("撤单失败"); }
+                };
+
+                const closeAllPositions = async () => {
+                    if(!confirm("⚠️ 确认一键平仓？这将撤销所有挂单并市价卖出所有币种换回USD！")) return;
+                    try {
+                        const res = await fetch(`${API_BASE}/close_all`, { method: "POST" });
+                        const data = await res.json();
+                        alert(data.msg || "操作完成");
+                        fetchAllData();
+                    } catch(e) { alert("平仓失败"); }
+                };
+
+                const initChart = () => {
+                    chart = echarts.init(document.getElementById('mainChart'));
+                    const option = {
+                        backgroundColor: 'transparent',
+                        textStyle: { color: '#848E9C' },
+                        tooltip: { trigger: 'axis', axisPointer: { type: 'cross', label: { backgroundColor: '#2b3139' } }, backgroundColor: '#181a20', borderColor: '#2b3139', textStyle: { color: '#EAECEF' } },
+                        legend: { data: ['BTC 最新价', '账户总权益'], textStyle: { color: '#848E9C' } },
+                        grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+                        xAxis: { type: 'category', data: [], splitLine: { show: false }, axisLine: { lineStyle: { color: '#2b3139' } } },
+                        yAxis: [
+                            { type: 'value', name: '价格 (USD)', scale: true, splitLine: { lineStyle: { color: '#2b3139', type: 'dashed' } } },
+                            { type: 'value', name: '权益 (USD)', scale: true, splitLine: { show: false } }
+                        ],
+                        series: [
+                            { name: 'BTC 最新价', type: 'line', data: [], yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#fcd535', width: 2 } },
+                            { name: '账户总权益', type: 'line', data: [], yAxisIndex: 1, showSymbol: false, lineStyle: { color: '#0ecb81', width: 2 } }
+                        ]
+                    };
+                    chart.setOption(option);
+                    window.addEventListener('resize', () => chart.resize());
+                };
+
+                const updateChart = (times, prices, equities) => {
+                    if(!chart) return;
+                    chart.setOption({ xAxis: { data: times }, series: [{ data: prices }, { data: equities }] });
+                };
+
+                onMounted(() => {
+                    initChart();
+                    fetchAllData(); // 一打开就拉取全部数据
+                    timer = setInterval(fetchAllData, 3000); // 3秒刷新一次，更有交易所的感觉
+                });
+
+                onUnmounted(() => { if(timer) clearInterval(timer); });
+
+                return { isRunning, config, wallets, orders, currentPrice, estimatedTotalValue, startStrategy, stopStrategy, cancelAllOrders, closeAllPositions }
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
