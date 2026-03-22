@@ -3,21 +3,11 @@ import requests
 import time
 import hmac
 import hashlib
-
-try:
-    import config
-except ImportError:
-    import sys
-    import os
-
-    sys.path.append(
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    )
-    import config
+import config
 
 BASE_URL = "https://mock-api.roostoo.com"
-API_KEY = config.API_KEY  # Replace with your actual API key
-SECRET_KEY = config.API_SECRET  # Replace with your actual secret key
+API_KEY = config.API_KEY_TEST  # Replace with your actual API key
+SECRET_KEY = config.API_SECRET_TEST  # Replace with your actual secret key
 
 # ------------------------------
 # Utility Functions
