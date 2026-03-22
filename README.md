@@ -1,74 +1,83 @@
-# Roostoo 量化交易机器人
+# Roostoo Multi-Pair Grid Trading Bot
 
-这是一个基于 Python 的模块化量化交易框架，支持实盘交易与历史回测。经过重构，实现了策略逻辑与回测引擎的完全解耦。
+A simple, multi-threaded quantitative trading bot implementing a grid trading strategy for the Roostoo platform.
 
-## 架构特点
+## Features
 
-- **解耦设计**：策略代码与回测框架分离，所有策略必须继承 `BaseStrategy` 接口。
-- **动态加载**：使用工厂模式动态加载策略，无需修改框架代码即可新增策略。
-- **纯粹回测引擎**：`src/backtest` 仅包含核心回测组件（数据加载、订单执行、账户追踪、绩效分析）。
-- **统一入口**：提供 `backtest_runner.py`（回测）和 `live_trading.py`（实盘）两个统一入口。
+- **Multi-Pair Support**: Run independent grid trading strategies for multiple currency pairs simultaneously.
+- **Automated Grid Initialization**: Automatically calculates grid levels and places initial buy/sell orders based on current market price.
+- **Dynamic Balance Management**: Checks for sufficient base currency and automatically performs market buys/sells to meet initial strategy requirements.
+- **Gap Maintenance**: Maintains a 2-spacing gap between the highest buy and lowest sell orders to prevent immediate overlapping executions.
+- **Robust Monitoring**: Continuously monitors order status and replenishes filled orders to maintain the grid.
 
-## 项目结构
+## Project Structure
 
 ```text
 sg_hk_quant_bot/
-├── src/
-│   ├── api/            # API 客户端 (如 Roostoo 等)
-│   ├── interfaces/     # 核心接口定义 (BaseStrategy 等)
-│   ├── strategies/     # 纯策略仓库 (双均线、多因子、网格等)
-│   ├── backtest/       # 纯回测引擎 (引擎、账户、执行、数据馈送、分析)
-│   └── utils/          # 通用工具函数
-├── backtest_runner.py  # 统一回测入口
-├── live_trading.py     # 统一实盘入口
-├── config.py           # 配置 (如需)
-├── pyproject.toml      # 项目依赖管理 (uv)
-└── data/               # 历史数据存放目录
+├── main.py            # Main entry point and grid trading logic
+├── roostoo.py         # Roostoo API wrapper for trading operations
+├── pyproject.toml     # Project configuration and dependency management (uv)
+└── requirements.txt   # Standard Python dependency list
 ```
 
-## 快速开始
+## Quick Start
 
-### 1. 配置 API 密钥 (针对实盘)
+### 1. Configure API Keys
 
-如需实盘交易，创建 `config.py`（如果使用了依赖 API 的策略）并填入相关密钥。
+The bot requires a `config.py` file (not included in the repository for security) containing your Roostoo API credentials:
 
-### 2. 运行回测
-使用统一的回测运行器，通过命令行参数指定策略和数据源：
-
-```bash
-# 运行双均线策略回测
-uv run python backtest_runner.py --strategy dualma --data data/YOUR_DATA.csv
-
-# 运行网格策略回测
-uv run python backtest_runner.py --strategy grid --data data/YOUR_DATA.csv
+```python
+# config.py
+API_KEY_TEST = "your_api_key"
+API_SECRET_TEST = "your_secret_key"
 ```
 
-**查看回测结果**：
-回测完成后，程序会在控制台打印核心绩效指标（如总收益率、最大回撤、交易次数等）。此外，详细的资金曲线和交易记录会被导出到 `reports/` 目录下：
-- `reports/equity_curve.csv`: 资金净值变化曲线
-- `reports/trades.csv`: 详细的每笔交易记录
+### 2. Configure Trading Pairs
 
-### 3. 运行实盘 (Mock API)
+Edit `GRID_CONFIGS` in `main.py` to set your desired symbols and grid parameters:
 
-使用统一的实盘运行器启动策略：
-
-```bash
-# 运行双均线策略实盘
-uv run python live_trading.py --strategy dualma --symbol BTC/USDT --interval 60
+```python
+GRID_CONFIGS = [
+    {
+        "symbol": "BTC/USD",
+        "lower_bound": 63000.0,
+        "upper_bound": 77000.0,
+        "num_grids": 40,
+        "q_per_grid": 0.0088,
+    },
+    # Add more pairs here...
+]
 ```
 
-## 如何添加新策略
+### 3. Install Dependencies
 
-1. 在 `src/strategies/` 目录下创建新的策略文件。
-2. 确保策略类继承自 `src.interfaces.strategy.BaseStrategy`。
-3. 实现 `initialize()`, `handle_data()` 和 `analyze()` 方法。
-4. 在 `backtest_runner.py` 和 `live_trading.py` 的 `STRATEGIES` 字典中注册你的策略类。
-
-## 依赖管理
-
-本项目推荐使用 [uv](https://github.com/astral-sh/uv) 管理依赖：
+This project uses [uv](https://github.com/astral-sh/uv) for dependency management:
 
 ```bash
 uv sync
 ```
 
+Or using pip:
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Run the Bot
+
+```bash
+uv run python main.py
+```
+
+## Strategy Details
+
+The bot implements a standard arithmetic grid trading strategy:
+- It divides the range between `lower_bound` and `upper_bound` into `num_grids` equal intervals.
+- It identifies the current price level and places sell orders above it and buy orders below it.
+- When a sell order is filled, it immediately places a new buy order one grid level below.
+- When a buy order is filled, it immediately places a new sell order one grid level above.
+- Maker and taker fees are accounted for during initialization to ensure sufficient balances.
+
+## Version
+
+Current version: **0.1.0**
