@@ -15,14 +15,28 @@ GRID_CONFIGS = [
         "lower_bound": 63000.0,
         "upper_bound": 77000.0,
         "num_grids": 40,
-        "q_per_grid": 0.0088,
+        "q_per_grid": 0.0882,
+    },
+    {
+        "symbol": "ETH/USD",
+        "lower_bound": 1850.0,
+        "upper_bound": 2500.0,
+        "num_grids": 52,
+        "q_per_grid": 2.1882,
+    },
+    {
+        "symbol": "TAO/USD",
+        "lower_bound": 220.0,
+        "upper_bound": 330.0,
+        "num_grids": 55,
+        "q_per_grid": 16.3635,
     },
     {
         "symbol": "PAXG/USD",
         "lower_bound": 4000.0,
         "upper_bound": 5000.0,
         "num_grids": 40,
-        "q_per_grid": 0.1375,
+        "q_per_grid": 1.3750,
     },
 ]
 
