@@ -6,8 +6,8 @@ import hashlib
 import config
 
 BASE_URL = "https://mock-api.roostoo.com"
-API_KEY = config.API_KEY_LIVE  # Replace with your actual API key
-SECRET_KEY = config.API_SECRET_LIVE  # Replace with your actual secret key
+API_KEY = config.API_KEY  # Replace with your actual API key
+SECRET_KEY = config.API_SECRET  # Replace with your actual secret key
 
 # ------------------------------
 # Utility Functions
