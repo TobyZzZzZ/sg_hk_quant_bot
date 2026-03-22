@@ -54,9 +54,7 @@ def init_grid(config):
     spacing = (upper_bound - lower_bound) / num_grids
     base_currency = symbol.split("/")[0]
 
-    # 1. Cancel all current pending orders
-    print(f"[{symbol}] Canceling all existing pending orders...")
-    cancel_order(pair=symbol)
+    # 1. (Removed) 撤销订单逻辑移至主线程，避免多线程并发导致 USD 尚未释放
 
     # 2. Get current price to determine the initial grid gap position
     ticker = get_ticker(symbol)
@@ -125,9 +123,37 @@ def init_grid(config):
                 raise Exception(
                     f"[{symbol}] Failed to sell excess {base_currency}: {resp}"
                 )
-            print(f"[{symbol}] Market buy successful.")
+            print(f"[{symbol}] Market sell successful.")
 
     # 4. Initialize pending orders
+    # Calculate required USD for BUY limit orders
+    num_buy_orders = k
+    required_usd = 0.0
+    for i in range(0, k):
+        price = lower_bound + i * spacing
+        required_usd += q_per_grid * price * (1 + MAKER_FEE)
+
+    # Check USD balance
+    # Wait briefly and get balance again in case market orders just executed
+    import time
+
+    time.sleep(1)
+    balance = get_balance()
+    if not balance or not balance.get("Success"):
+        raise Exception(f"[{symbol}] Failed to get balance for USD check.")
+
+    usd_balance = balance["SpotWallet"].get("USD", {})
+    free_usd = float(usd_balance.get("Free", 0.0))
+    print(
+        f"[{symbol}] Current free USD: {free_usd:.2f}, Required USD: {required_usd:.2f}"
+    )
+
+    if free_usd < required_usd:
+        # We can't automatically 'create' USD, so we must fail fast and inform the user
+        raise Exception(
+            f"[{symbol}] Insufficient USD balance to place BUY orders. Have {free_usd:.2f}, need {required_usd:.2f}."
+        )
+
     active_orders = {}
     print(f"[{symbol}] Placing initial SELL limit orders...")
     for i in range(k + 1, num_grids + 1):
@@ -237,7 +263,19 @@ def run_grid(config):
 
 
 def main():
-    print("=== Starting Multi-Pair Grid Bots ===")
+    print("=== Canceling all existing orders for configured pairs ===")
+    # 在所有网格初始化之前，统一撤销所有配置的交易对订单，释放 USD 资金
+    for config in GRID_CONFIGS:
+        symbol = config["symbol"]
+        print(f"[{symbol}] Canceling pending orders...")
+        cancel_order(pair=symbol)
+        time.sleep(0.5)  # 稍微等待，防止 API 限流及给交易所撮合引擎撤单时间
+
+    # 额外等待一小段时间确保所有资金(尤其是 USD)已经从锁单状态彻底释放为 Free 状态
+    print("Waiting for funds to be completely released...")
+    time.sleep(5)
+
+    print("\n=== Starting Multi-Pair Grid Bots ===")
     threads = []
 
     # Start an independent thread for each configuration
