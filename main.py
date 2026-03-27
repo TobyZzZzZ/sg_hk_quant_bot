@@ -54,8 +54,6 @@ def init_grid(config):
     spacing = (upper_bound - lower_bound) / num_grids
     base_currency = symbol.split("/")[0]
 
-    # 1. (Removed) 撤销订单逻辑移至主线程，避免多线程并发导致 USD 尚未释放
-
     # 2. Get current price to determine the initial grid gap position
     ticker = get_ticker(symbol)
     if not ticker or not ticker.get("Success"):
@@ -264,14 +262,14 @@ def run_grid(config):
 
 def main():
     print("=== Canceling all existing orders for configured pairs ===")
-    # 在所有网格初始化之前，统一撤销所有配置的交易对订单，释放 USD 资金
+    # cancel all orders to release capital
     for config in GRID_CONFIGS:
         symbol = config["symbol"]
         print(f"[{symbol}] Canceling pending orders...")
         cancel_order(pair=symbol)
-        time.sleep(0.5)  # 稍微等待，防止 API 限流及给交易所撮合引擎撤单时间
+        time.sleep(0.5)  # wait 0.5 second to prevent reaching API limit
 
-    # 额外等待一小段时间确保所有资金(尤其是 USD)已经从锁单状态彻底释放为 Free 状态
+    # Wait until all USD is released to "free" state
     print("Waiting for funds to be completely released...")
     time.sleep(5)
 
